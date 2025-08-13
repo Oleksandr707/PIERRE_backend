@@ -128,6 +128,7 @@ app.use('/api/door-access', require('./routes/doorAccess'));
 app.use('/api/problems', require('./routes/problems'));
 app.use('/api/passes', require('./routes/passes'));
 const guildsRouter = require('./routes/guilds');
+app.use('/api/payments', require('./routes/payments'));
 app.use('/api/guilds', guildsRouter);
 
 // Voting route
