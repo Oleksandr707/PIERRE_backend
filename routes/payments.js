@@ -29,7 +29,7 @@ router.post('/create-setup-intent', requireAuth, async (req, res) => {
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // 1) Ensure Stripe Customer exists
+    // Ensure Stripe Customer exists
     if (!user.stripeCustomerId) {
       const customer = await stripe.customers.create({
         email: user.email,
@@ -39,7 +39,7 @@ router.post('/create-setup-intent', requireAuth, async (req, res) => {
       await user.save();
     }
 
-    // 2) Create a SetupIntent linked to the customer
+    // Create a SetupIntent linked to the customer
     const setupIntent = await stripe.setupIntents.create({
       customer: user.stripeCustomerId,
       usage: 'off_session',
@@ -96,6 +96,10 @@ router.post('/set-default', requireAuth, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/payments/customer-sheet
+ * Returns { customerId, ephemeralKeySecret, hasSavedCard }
+ */
 router.get('/customer-sheet', requireAuth, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
@@ -118,44 +122,6 @@ router.get('/customer-sheet', requireAuth, async (req, res) => {
     );
 
     // Check if user has a saved card
-    const pms = await stripe.paymentMethods.list({
-      customer: user.stripeCustomerId,
-      type: 'card',
-    });
-
-    res.json({
-      customerId: user.stripeCustomerId,
-      ephemeralKeySecret: ephemeralKey.secret,
-      hasSavedCard: pms.data?.length > 0,
-    });
-  } catch (err) {
-    console.error('customer-sheet error:', err);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-router.get('/customer-sheet', requireAuth, async (req, res) => {
-  try {
-    const user = await User.findById(req.userId);
-    if (!user) return res.status(404).json({ message: 'User not found' });
-
-    // Ensure Stripe customer
-    if (!user.stripeCustomerId) {
-      const customer = await stripe.customers.create({
-        email: user.email,
-        metadata: { appUserId: String(user._id) },
-      });
-      user.stripeCustomerId = customer.id;
-      await user.save();
-    }
-
-    // Create ephemeral key (MUST pass an API version)
-    const ephemeralKey = await stripe.ephemeralKeys.create(
-      { customer: user.stripeCustomerId },
-      { apiVersion: '2024-06-20' } // pin to your Stripe API version
-    );
-
-    // Check if any saved card exists
     const pms = await stripe.paymentMethods.list({
       customer: user.stripeCustomerId,
       type: 'card',

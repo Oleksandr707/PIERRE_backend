@@ -1,3 +1,4 @@
+// routes/stripe.js
 const express = require('express');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { authenticateToken } = require('../middleware/authMiddleware');
@@ -11,80 +12,58 @@ const router = express.Router();
 
 // Real Stripe products mapping
 const STRIPE_PRODUCTS = {
-  day: {
-    productId: 'prod_SRMtkNFSC1Vuw1',
-    priceId: 'price_1RWUA5Kje5iG0GViRUNutvbL',
-    amount: 2500, // $25.00 in cents
-    duration: 7 * 60 * 60 * 1000, // 7 hours in milliseconds
-    type: 'day'
-  },
-  week: {
-    productId: 'prod_SRMwDPRP7Xrok6', 
-    priceId: 'price_1RWUChKje5iG0GViCpr7WucW',
-    amount: 12000, // $120.00 in cents
-    duration: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
-    type: 'week'
-  },
-  month: {
-    productId: 'prod_SRMxnjgFNeWDZP',
-    priceId: 'price_1RWUDeKje5iG0GViMiosJ4FC',
-    amount: 40000, // $400.00 in cents
-    duration: 30 * 24 * 60 * 60 * 1000, // 30 days in milliseconds
-    type: 'month'
-  },
-  year: {
-    productId: 'prod_SRMy92JS4lJ5BB',
-    priceId: 'price_1RWUEPKje5iG0GVik2sVHsu9',
-    amount: 400000, // $4000.00 in cents
-    duration: 365 * 24 * 60 * 60 * 1000, // 365 days in milliseconds
-    type: 'year'
-  }
+  day:   { productId: 'prod_SRMtkNFSC1Vuw1', priceId: 'price_1RWUA5Kje5iG0GViRUNutvbL', amount: 2500,   duration: 7 * 60 * 60 * 1000,  type: 'day' },
+  week:  { productId: 'prod_SRMwDPRP7Xrok6', priceId: 'price_1RWUChKje5iG0GViCpr7WucW', amount: 12000,  duration: 7 * 24 * 60 * 60 * 1000, type: 'week' },
+  month: { productId: 'prod_SRMxnjgFNeWDZP', priceId: 'price_1RWUDeKje5iG0GViMiosJ4FC', amount: 40000,  duration: 30 * 24 * 60 * 60 * 1000, type: 'month' },
+  year:  { productId: 'prod_SRMy92JS4lJ5BB', priceId: 'price_1RWUEPKje5iG0GVik2sVHsu9', amount: 400000, duration: 365 * 24 * 60 * 60 * 1000, type: 'year' }
 };
 
 // Get Stripe publishable key
-// stripe.js
 router.get('/config', (req, res) => {
-  res.json({
-    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY
-  });
+  res.json({ publishableKey: process.env.STRIPE_PUBLISHABLE_KEY });
 });
-
 
 // Create payment intent for pass purchases using real Stripe products
 router.post('/create-payment-intent', authenticateToken, async (req, res) => {
   console.log('💰 ===== LIVE PAYMENT INTENT CREATION =====');
   console.log('🎫 User:', req.user);
   console.log('📝 Request body:', req.body);
-  
+
   try {
     const { passType, couponCode, metadata = {} } = req.body;
-    
+
     if (!passType || !STRIPE_PRODUCTS[passType]) {
       return res.status(400).json({ error: 'Invalid pass type' });
     }
 
     const product = STRIPE_PRODUCTS[passType];
+
+    // Get app user & ensure Stripe customer exists  ---- FIX START
     const userId = req.user.userId || req.user.id || req.user._id;
-    
-    console.log('💵 Creating payment for:', {
-      passType,
-      productId: product.productId,
-      priceId: product.priceId,
-      amount: product.amount,
-      userId,
-      couponCode
-    });
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    let customerId = user.stripeCustomerId;
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: user.email,
+        name: user.username,
+        metadata: { userId: userId.toString() }
+      });
+      customerId = customer.id;
+      user.stripeCustomerId = customerId;
+      await user.save();
+    }
+    // ---- FIX END
 
     // Create payment intent with real product
     const paymentIntentData = {
       amount: product.amount,
       currency: 'usd',
-      automatic_payment_methods: {
-        enabled: true,
-      },
+      automatic_payment_methods: { enabled: true },
       metadata: {
         userId: userId.toString(),
-        passType: passType,
+        passType,
         productId: product.productId,
         priceId: product.priceId,
         type: 'pass_purchase',
@@ -92,39 +71,50 @@ router.post('/create-payment-intent', authenticateToken, async (req, res) => {
       }
     };
 
+    // ✅ CRITICAL FIX: bind PI to the same customer as the saved card
+    paymentIntentData.customer = customerId;
+    // (optional) save for future
+    paymentIntentData.setup_future_usage = 'off_session';
+
     // Add coupon for yearly passes if provided
     if (passType === 'year' && couponCode) {
       try {
-        // Validate the coupon exists in Stripe
         const coupon = await stripe.coupons.retrieve(couponCode);
-        paymentIntentData.metadata.couponCode = couponCode;
+        paymentIntentData.metadata.couponCode = coupon.id;
         console.log('✅ Coupon validated:', coupon.id);
-      } catch (couponError) {
+      } catch {
         console.log('❌ Invalid coupon code:', couponCode);
         return res.status(400).json({ error: 'Invalid coupon code' });
       }
     }
 
     const paymentIntent = await stripe.paymentIntents.create(paymentIntentData);
-    
+
     console.log('✅ Live PaymentIntent created:', {
       id: paymentIntent.id,
       amount: paymentIntent.amount,
       currency: paymentIntent.currency,
-      passType: passType
+      passType
     });
 
     res.json({
       clientSecret: paymentIntent.client_secret,
       paymentIntentId: paymentIntent.id,
       amount: product.amount,
-      passType: passType
+      passType
     });
 
   } catch (error) {
     console.error('❌ Error creating live payment intent:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Alias to match your frontend path: /api/passes/stripe/create-intent
+router.post('/create-intent', authenticateToken, async (req, res) => {
+  // simply reuse the same logic by calling the same code path
+  req.url = '/create-payment-intent';
+  return router.handle(req, res);
 });
 
 // Create subscription
@@ -148,9 +138,7 @@ router.post('/create-subscription', authenticateToken, async (req, res) => {
       const customer = await stripe.customers.create({
         email: user.email,
         name: user.username,
-        metadata: {
-          userId: userId.toString()
-        }
+        metadata: { userId: userId.toString() }
       });
       customerId = customer.id;
       user.stripeCustomerId = customerId;
@@ -158,15 +146,11 @@ router.post('/create-subscription', authenticateToken, async (req, res) => {
     }
 
     // Attach payment method to customer
-    await stripe.paymentMethods.attach(paymentMethodId, {
-      customer: customerId,
-    });
+    await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId });
 
     // Set as default payment method
     await stripe.customers.update(customerId, {
-      invoice_settings: {
-        default_payment_method: paymentMethodId,
-      },
+      invoice_settings: { default_payment_method: paymentMethodId },
     });
 
     // Create subscription
@@ -196,7 +180,7 @@ router.get('/subscriptions', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id || req.user._id;
     const user = await User.findById(userId);
-    
+
     if (!user || !user.stripeCustomerId) {
       return res.json({ subscriptions: [] });
     }
@@ -238,15 +222,8 @@ router.delete('/subscription/:subscriptionId', authenticateToken, async (req, re
 // Get products and prices
 router.get('/products', async (req, res) => {
   try {
-    const products = await stripe.products.list({
-      active: true,
-      expand: ['data.default_price']
-    });
-
-    const prices = await stripe.prices.list({
-      active: true,
-      expand: ['data.product']
-    });
+    const products = await stripe.products.list({ active: true, expand: ['data.default_price'] });
+    const prices = await stripe.prices.list({ active: true, expand: ['data.product'] });
 
     res.json({ products: products.data, prices: prices.data });
   } catch (error) {
@@ -269,14 +246,12 @@ router.post('/webhook', express.raw({type: 'application/json'}), async (req, res
 
   // Handle the event
   switch (event.type) {
-    case 'payment_intent.succeeded':
+    case 'payment_intent.succeeded': {
       const paymentIntent = event.data.object;
       console.log('💰 Payment succeeded:', paymentIntent.id);
-      
-      // Activate the pass for the user
       await activatePassAfterPayment(paymentIntent);
       break;
-    
+    }
     default:
       console.log(`Unhandled event type ${event.type}`);
   }
@@ -287,20 +262,21 @@ router.post('/webhook', express.raw({type: 'application/json'}), async (req, res
 // Function to activate pass after successful payment
 async function activatePassAfterPayment(paymentIntent) {
   try {
-    const { userId, passType, productId } = paymentIntent.metadata;
-    
-    if (!userId || !passType || !STRIPE_PRODUCTS[passType]) {
+    const STRIPE_PRODUCTS_LOCAL = STRIPE_PRODUCTS;
+    const { userId, passType, productId } = paymentIntent.metadata || {};
+
+    if (!userId || !passType || !STRIPE_PRODUCTS_LOCAL[passType]) {
       console.error('❌ Invalid payment metadata:', paymentIntent.metadata);
       return;
     }
 
-    const product = STRIPE_PRODUCTS[passType];
+    const product = STRIPE_PRODUCTS_LOCAL[passType];
     const Pass = require('../models/Pass');
-    
+
     // Create new pass
     const newPass = new Pass({
       id: `live_pass_${userId}_${Date.now()}`,
-      userId: userId,
+      userId,
       type: passType,
       startTime: new Date(),
       endTime: new Date(Date.now() + product.duration),
@@ -316,7 +292,6 @@ async function activatePassAfterPayment(paymentIntent) {
     console.log('✅ Pass activated after payment:', newPass.id);
 
     // Update user's pass status
-    const User = require('../models/User');
     await User.findByIdAndUpdate(userId, {
       currentPassId: newPass.id,
       lastPurchaseDate: new Date()
@@ -327,4 +302,4 @@ async function activatePassAfterPayment(paymentIntent) {
   }
 }
 
-module.exports = router; 
+module.exports = router;
