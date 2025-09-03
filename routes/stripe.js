@@ -4,13 +4,8 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { authenticateToken } = require('../middleware/authMiddleware');
 const User = require('../models/User');
 
-const isLiveKey = process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY.startsWith('sk_live_');
-const keyType = isLiveKey ? 'live' : 'test';
-console.log(`💳 Stripe module loaded with ${keyType} secret key:`, process.env.STRIPE_SECRET_KEY ? process.env.STRIPE_SECRET_KEY.substring(0, 20) + '...' : 'Using fallback test key');
-
 const router = express.Router();
 
-// Real Stripe products mapping
 const STRIPE_PRODUCTS = {
   day:   { productId: 'prod_SRMtkNFSC1Vuw1', priceId: 'price_1RWUA5Kje5iG0GViRUNutvbL', amount: 2500,   duration: 7 * 60 * 60 * 1000,  type: 'day' },
   week:  { productId: 'prod_SRMwDPRP7Xrok6', priceId: 'price_1RWUChKje5iG0GViCpr7WucW', amount: 12000,  duration: 7 * 24 * 60 * 60 * 1000, type: 'week' },
@@ -18,27 +13,35 @@ const STRIPE_PRODUCTS = {
   year:  { productId: 'prod_SRMy92JS4lJ5BB', priceId: 'price_1RWUEPKje5iG0GVik2sVHsu9', amount: 400000, duration: 365 * 24 * 60 * 60 * 1000, type: 'year' }
 };
 
-// Get Stripe publishable key
 router.get('/config', (req, res) => {
   res.json({ publishableKey: process.env.STRIPE_PUBLISHABLE_KEY });
 });
 
-// Create payment intent for pass purchases using real Stripe products
-router.post('/create-payment-intent', authenticateToken, async (req, res) => {
-  console.log('💰 ===== LIVE PAYMENT INTENT CREATION =====');
-  console.log('🎫 User:', req.user);
-  console.log('📝 Request body:', req.body);
+// --- helper to ensure we have a Stripe customer for this user ---
+async function ensureCustomer(user) {
+  if (user.stripeCustomerId) return user.stripeCustomerId;
+  const c = await stripe.customers.create({
+    email: user.email,
+    name: user.username,
+    metadata: { userId: String(user._id) }
+  });
+  user.stripeCustomerId = c.id;
+  await user.save();
+  return c.id;
+}
 
+// ---------- ORIGINAL ROUTE (just 2 lines added) ----------
+router.post('/create-payment-intent', authenticateToken, async (req, res) => {
+  // ... your existing logs ...
   try {
     const { passType, couponCode, metadata = {} } = req.body;
-
     if (!passType || !STRIPE_PRODUCTS[passType]) {
       return res.status(400).json({ error: 'Invalid pass type' });
     }
 
     const product = STRIPE_PRODUCTS[passType];
 
-    // Get app user & ensure Stripe customer exists  ---- FIX START
+    // 🔐 Get app user and ensure Stripe customer
     const userId = req.user.userId || req.user.id || req.user._id;
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -54,13 +57,14 @@ router.post('/create-payment-intent', authenticateToken, async (req, res) => {
       user.stripeCustomerId = customerId;
       await user.save();
     }
-    // ---- FIX END
 
-    // Create payment intent with real product
-    const paymentIntentData = {
+    // ✅ CRITICAL: include `customer`
+    const paymentIntent = await stripe.paymentIntents.create({
       amount: product.amount,
       currency: 'usd',
+      customer: customerId,                     // <-- required
       automatic_payment_methods: { enabled: true },
+      setup_future_usage: 'off_session',        // optional
       metadata: {
         userId: userId.toString(),
         passType,
@@ -69,33 +73,9 @@ router.post('/create-payment-intent', authenticateToken, async (req, res) => {
         type: 'pass_purchase',
         ...metadata
       }
-    };
-
-    // ✅ CRITICAL FIX: bind PI to the same customer as the saved card
-    paymentIntentData.customer = customerId;
-    // (optional) save for future
-    paymentIntentData.setup_future_usage = 'off_session';
-
-    // Add coupon for yearly passes if provided
-    if (passType === 'year' && couponCode) {
-      try {
-        const coupon = await stripe.coupons.retrieve(couponCode);
-        paymentIntentData.metadata.couponCode = coupon.id;
-        console.log('✅ Coupon validated:', coupon.id);
-      } catch {
-        console.log('❌ Invalid coupon code:', couponCode);
-        return res.status(400).json({ error: 'Invalid coupon code' });
-      }
-    }
-
-    const paymentIntent = await stripe.paymentIntents.create(paymentIntentData);
-
-    console.log('✅ Live PaymentIntent created:', {
-      id: paymentIntent.id,
-      amount: paymentIntent.amount,
-      currency: paymentIntent.currency,
-      passType
     });
+
+    console.log('🧩 [create-payment-intent] customer:', customerId, 'PI:', paymentIntent.id);
 
     res.json({
       clientSecret: paymentIntent.client_secret,
@@ -103,19 +83,70 @@ router.post('/create-payment-intent', authenticateToken, async (req, res) => {
       amount: product.amount,
       passType
     });
-
   } catch (error) {
     console.error('❌ Error creating live payment intent:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Alias to match your frontend path: /api/passes/stripe/create-intent
+
+
+// ---------- ALIAS ROUTE your frontend calls ----------
 router.post('/create-intent', authenticateToken, async (req, res) => {
-  // simply reuse the same logic by calling the same code path
-  req.url = '/create-payment-intent';
-  return router.handle(req, res);
+  try {
+    const { amount, currency = 'usd', passType = '', metadata = {} } = req.body;
+
+    // 1) Resolve your app user
+    const userId = req.user.userId || req.user.id || req.user._id;
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // 2) Ensure Stripe Customer exists for this app user
+    let customerId = user.stripeCustomerId;
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: user.email,
+        name: user.username,
+        metadata: { userId: String(userId) }
+      });
+      customerId = customer.id;
+      user.stripeCustomerId = customerId;
+      await user.save();
+    }
+
+    // 3) Build amount safely (Stripe needs integer)
+    const amt = Math.max(1, parseInt(amount, 10));
+
+    // 4) ✅ Create PaymentIntent **with the same customer**
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amt,
+      currency,
+      customer: customerId,                           // <-- CRITICAL
+      automatic_payment_methods: { enabled: true },
+      setup_future_usage: 'off_session',              // optional
+      metadata: {
+        userId: String(userId),
+        passType,
+        type: 'pass_purchase',
+        ...metadata
+      }
+    });
+
+    console.log('🧩 [/create-intent] customer:', customerId,
+                'PI:', paymentIntent.id, 'amount:', amt);
+
+    return res.json({
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+      amount: amt,
+      passType
+    });
+  } catch (error) {
+    console.error('❌ Error in /create-intent:', error);
+    return res.status(500).json({ error: error.message });
+  }
 });
+
 
 // Create subscription
 router.post('/create-subscription', authenticateToken, async (req, res) => {

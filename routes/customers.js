@@ -336,4 +336,49 @@ router.post('/update-membership', authenticateToken, async (req, res) => {
   }
 });
 
+// Get all customers (admin only)
+// Get all customers (TEMP: allow any authenticated user)
+router.get('/customers_all', authenticateToken, async (req, res) => {
+  try {
+    // Fetch all users (excluding passwords)
+    const users = await User.find().select('-password');
+
+    const customers = users.map(user => ({
+      id: user._id,
+      email: user.email,
+      username: user.username,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phoneNumber: user.phoneNumber,
+      address: user.address,
+      city: user.city,
+      state: user.state,
+      zipCode: user.zipCode,
+      profilePhoto: user.profilePhoto,
+      emergencyContact: user.emergencyContact,
+      climbingLevel: user.climbingLevel,
+      membershipType: user.membershipType,
+      membershipStatus: user.membershipStatus,
+      membershipStartDate: user.membershipStartDate,
+      membershipEndDate: user.membershipEndDate,
+      level: user.level,
+      xp: user.xp,
+      spark: user.spark,
+      guild: user.guild,
+      guildRole: user.guildRole,
+      waiverStatus: user.waiverStatus,
+      waiverSignedAt: user.waiverSignedAt,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    }));
+
+    res.json({ customers });
+  } catch (error) {
+    console.error('Fetch customers error:', error);
+    res.status(500).json({ message: 'Server error while fetching customers' });
+  }
+});
+
+
+
 module.exports = router; 

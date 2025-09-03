@@ -105,7 +105,6 @@ router.get('/customer-sheet', requireAuth, async (req, res) => {
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // Ensure Stripe customer exists
     if (!user.stripeCustomerId) {
       const customer = await stripe.customers.create({
         email: user.email,
@@ -115,17 +114,17 @@ router.get('/customer-sheet', requireAuth, async (req, res) => {
       await user.save();
     }
 
-    // Create ephemeral key (note the API version requirement)
     const ephemeralKey = await stripe.ephemeralKeys.create(
       { customer: user.stripeCustomerId },
-      { apiVersion: '2024-06-20' } // use your pinned Stripe API version
+      { apiVersion: '2024-06-20' }
     );
 
-    // Check if user has a saved card
     const pms = await stripe.paymentMethods.list({
       customer: user.stripeCustomerId,
       type: 'card',
     });
+
+    console.log('🧩 [customer-sheet] customerId:', user.stripeCustomerId);
 
     res.json({
       customerId: user.stripeCustomerId,

@@ -81,7 +81,7 @@ const userSchema = new mongoose.Schema({
   },
   climbingLevel: {
     type: String,
-    enum: ['beginner', 'intermediate', 'advanced', 'expert'],
+    enum: ['beginner', 'intermediate', 'advanced', 'expert', 'super'],
     default: 'beginner'
   },
   // Gamification fields
