@@ -23,11 +23,11 @@ function getPassPriceUSD(passType, date = new Date()) {
     case 'day':
       return isFridayInTZ(date) ? 10 : 25; // <-- Friday deal
     case 'week':
-      return 120;
+      return 77;
     case 'month':
-      return 400;
+      return 90;
     case 'year':
-      return 4000;
+      return 777;
     default:
       throw new Error('Invalid pass type');
   }
@@ -43,10 +43,10 @@ const PASS_DURATIONS = {
 
 // Stripe product references (for metadata / reporting)
 const STRIPE_PRODUCTS = {
-  day:   { productId: 'prod_SRMtkNFSC1Vuw1', priceId: 'price_1RWUA5Kje5iG0GViRUNutvbL' },
+  day:   { productId: 'prod_SRMtkNFSC1Vuw1', priceId: 'price_1Rqc02Kje5iG0GVieA3OxBgT' },
   week:  { productId: 'prod_SRMwDPRP7Xrok6', priceId: 'price_1RWUChKje5iG0GViCpr7WucW' },
   month: { productId: 'prod_SRMxnjgFNeWDZP', priceId: 'price_1RWUDeKje5iG0GViMiosJ4FC' },
-  year:  { productId: 'prod_SRMy92JS4lJ5BB', priceId: 'price_1RWUEPKje5iG0GVik2sVHsu9' }
+  year:  { productId: 'prod_SRMy92JS4lJ5BB', priceId: 'price_1RqbvlKje5iG0GVi6KrYd5Rm' }
 };
 
 router.get('/config', (req, res) => {
