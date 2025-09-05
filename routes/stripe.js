@@ -8,28 +8,23 @@ const Pass = require('../models/Pass');
 const router = express.Router();
 
 // ===========================
-//  Friday deal configuration
+//  Currency & Friday deal
 // ===========================
-const GYM_TZ = 'America/Toronto'; // Change if your gym uses a different local timezone
+const CURRENCY = 'cad';                    // <- charge in CAD
+const GYM_TZ = 'America/Toronto';          // change to your local timezone if needed
 
 function isFridayInTZ(date = new Date(), tz = GYM_TZ) {
-  return (
-    new Intl.DateTimeFormat('en-CA', { timeZone: tz, weekday: 'short' }).format(date) === 'Fri'
-  );
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, weekday: 'short' }).format(date) === 'Fri';
 }
 
-function getPassPriceUSD(passType, date = new Date()) {
+// All prices expressed in CAD dollars
+function getPassPriceCAD(passType, date = new Date()) {
   switch (passType) {
-    case 'day':
-      return isFridayInTZ(date) ? 10 : 25; // <-- Friday deal
-    case 'week':
-      return 77;
-    case 'month':
-      return 90;
-    case 'year':
-      return 777;
-    default:
-      throw new Error('Invalid pass type');
+    case 'day':   return isFridayInTZ(date) ? 10 : 25; // Friday deal in CAD
+    case 'week':  return 77;
+    case 'month': return 90;
+    case 'year':  return 777;
+    default: throw new Error('Invalid pass type');
   }
 }
 
@@ -79,13 +74,13 @@ router.post('/create-payment-intent', authenticateToken, async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' });
 
     const customerId = await ensureCustomer(user);
-    const amountCents = Math.round(getPassPriceUSD(passType) * 100);
+    const amountCents = Math.round(getPassPriceCAD(passType) * 100);
 
     const product = STRIPE_PRODUCTS[passType];
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountCents,
-      currency: 'usd',
+      currency: CURRENCY, // <- CAD
       customer: customerId,
       automatic_payment_methods: { enabled: true },
       setup_future_usage: 'off_session',
@@ -99,7 +94,7 @@ router.post('/create-payment-intent', authenticateToken, async (req, res) => {
       }
     });
 
-    console.log('🧩 [create-payment-intent] customer:', customerId, 'PI:', paymentIntent.id, 'amount:', amountCents);
+    console.log('🧩 [create-payment-intent] customer:', customerId, 'PI:', paymentIntent.id, 'amount:', amountCents, CURRENCY);
 
     res.json({
       clientSecret: paymentIntent.client_secret,
@@ -116,7 +111,7 @@ router.post('/create-payment-intent', authenticateToken, async (req, res) => {
 // --- Alias route your frontend may call (supports amount or passType) ---
 router.post('/create-intent', authenticateToken, async (req, res) => {
   try {
-    const { amount, currency = 'usd', passType = '', metadata = {} } = req.body;
+    const { amount, passType = '', metadata = {} } = req.body;
 
     const userId = req.user.userId || req.user.id || req.user._id;
     const user = await User.findById(userId);
@@ -124,10 +119,10 @@ router.post('/create-intent', authenticateToken, async (req, res) => {
 
     const customerId = await ensureCustomer(user);
 
-    // If passType is provided, server computes the amount (Friday discount applied)
+    // If passType is provided, server computes the amount in CAD (Friday discount applied)
     let amountCents;
     if (passType && ['day', 'week', 'month', 'year'].includes(passType)) {
-      amountCents = Math.round(getPassPriceUSD(passType) * 100);
+      amountCents = Math.round(getPassPriceCAD(passType) * 100);
     } else {
       // Fallback to explicit amount (e.g., for non-pass products)
       const parsed = parseInt(amount, 10);
@@ -136,7 +131,7 @@ router.post('/create-intent', authenticateToken, async (req, res) => {
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountCents,
-      currency,
+      currency: CURRENCY, // <- always CAD
       customer: customerId,
       automatic_payment_methods: { enabled: true },
       setup_future_usage: 'off_session',
@@ -148,7 +143,7 @@ router.post('/create-intent', authenticateToken, async (req, res) => {
       }
     });
 
-    console.log('🧩 [/create-intent] customer:', customerId, 'PI:', paymentIntent.id, 'amount:', amountCents);
+    console.log('🧩 [/create-intent] customer:', customerId, 'PI:', paymentIntent.id, 'amount:', amountCents, CURRENCY);
 
     return res.json({
       clientSecret: paymentIntent.client_secret,
@@ -162,7 +157,7 @@ router.post('/create-intent', authenticateToken, async (req, res) => {
   }
 });
 
-// Create subscription (unchanged)
+// Create subscription (unchanged currency here — ensure your priceId is CAD in Stripe)
 router.post('/create-subscription', authenticateToken, async (req, res) => {
   try {
     const { priceId, paymentMethodId } = req.body;
@@ -184,7 +179,7 @@ router.post('/create-subscription', authenticateToken, async (req, res) => {
 
     const subscription = await stripe.subscriptions.create({
       customer: customerId,
-      items: [{ price: priceId }],
+      items: [{ price: priceId }], // make sure this priceId is a CAD price in Stripe
       payment_settings: {
         payment_method_types: ['card'],
         save_default_payment_method: 'on_subscription',
@@ -203,7 +198,7 @@ router.post('/create-subscription', authenticateToken, async (req, res) => {
   }
 });
 
-// Get user's subscriptions (unchanged)
+// Get user's subscriptions
 router.get('/subscriptions', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id || req.user._id;
@@ -226,7 +221,7 @@ router.get('/subscriptions', authenticateToken, async (req, res) => {
   }
 });
 
-// Cancel subscription (unchanged)
+// Cancel subscription
 router.delete('/subscription/:subscriptionId', authenticateToken, async (req, res) => {
   try {
     const { subscriptionId } = req.params;
@@ -247,7 +242,7 @@ router.delete('/subscription/:subscriptionId', authenticateToken, async (req, re
   }
 });
 
-// Stripe products (unchanged)
+// Stripe products passthrough
 router.get('/products', async (req, res) => {
   try {
     const products = await stripe.products.list({ active: true, expand: ['data.default_price'] });
@@ -310,21 +305,21 @@ async function activatePassAfterPayment(paymentIntent) {
         ? paymentIntent.amount_received
         : paymentIntent.amount;
 
-    const chargedUSD = (chargedCents || 0) / 100;
+    const chargedCAD = (chargedCents || 0) / 100;
 
     // Create the pass
     const passDoc = new Pass({
-      user: userId, // <-- keep consistent with your schema (ref to User)
+      user: userId, // ref to User
       type: passType,
       startTime: now,
       endTime: new Date(now.getTime() + PASS_DURATIONS[passType]),
       purchasedAt: now,
-      price: chargedUSD,
+      price: chargedCAD, // store CAD amount
       duration: PASS_DURATIONS[passType],
       paymentIntentId: paymentIntent.id,
       stripeProductId: productId || STRIPE_PRODUCTS[passType]?.productId,
       status: 'active',
-      currency: paymentIntent.currency
+      currency: paymentIntent.currency // should be 'cad'
     });
 
     await passDoc.save();

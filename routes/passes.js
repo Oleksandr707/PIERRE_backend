@@ -7,35 +7,29 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const Pass = require('../models/Pass');
 
 // ===========================
-//  Friday deal configuration
+//  Currency & Friday deal
 // ===========================
-const GYM_TZ = 'America/Toronto'; // Change if your gym uses a different local timezone
+const CURRENCY = 'cad';                    // <- charge in CAD
+const GYM_TZ = 'America/Toronto';          // Change if your gym uses a different local timezone
 
 function isFridayInTZ(date = new Date(), tz = GYM_TZ) {
   // Returns true if the given date is Friday in the specified timezone
-  return (
-    new Intl.DateTimeFormat('en-CA', { timeZone: tz, weekday: 'short' }).format(date) === 'Fri'
-  );
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, weekday: 'short' }).format(date) === 'Fri';
 }
 
-function getPassPriceUSD(passType, date = new Date()) {
+// All prices expressed in CAD dollars
+function getPassPriceCAD(passType, date = new Date()) {
   switch (passType) {
-    case 'day':
-      return isFridayInTZ(date) ? 10 : 25; // <-- Friday deal
-    case 'week':
-      return 77;
-    case 'month':
-      return 90;
-    case 'year':
-      return 777;
-    default:
-      throw new Error('Invalid pass type');
+    case 'day':   return isFridayInTZ(date) ? 10 : 25; // Friday deal
+    case 'week':  return 77;
+    case 'month': return 90;
+    case 'year':  return 777;
+    default: throw new Error('Invalid pass type');
   }
 }
 
 // Pass durations (ms)
 const PASS_DURATIONS = {
-  // NOTE: This was 7 hours in your original file. Keep or change as you wish.
   day: 7 * 60 * 60 * 1000,
   week: 7 * 24 * 60 * 60 * 1000,
   month: 30 * 24 * 60 * 60 * 1000,
@@ -101,7 +95,7 @@ router.post('/activate', authenticateToken, async (req, res) => {
     }
 
     // Determine actual price (prefer Stripe PI if we have it and it succeeded)
-    let priceUSD = getPassPriceUSD(passType);
+    let priceCAD = getPassPriceCAD(passType);
     let chargedCurrency = null;
 
     if (paymentIntentId) {
@@ -112,7 +106,7 @@ router.post('/activate', authenticateToken, async (req, res) => {
           typeof pi.amount_received === 'number' && pi.amount_received > 0
             ? pi.amount_received
             : pi.amount;
-        priceUSD = (cents || 0) / 100;
+        priceCAD = (cents || 0) / 100;
         chargedCurrency = pi.currency;
       } catch (e) {
         console.warn('⚠️ Could not retrieve PI; falling back to computed price.', e?.message);
@@ -137,7 +131,7 @@ router.post('/activate', authenticateToken, async (req, res) => {
       type: passType,
       paymentIntentId: paymentIntentId || null,
       stripeProductId: stripeProductId || STRIPE_PRODUCTS[passType].productId,
-      price: priceUSD, // store actual price charged (or computed)
+      price: priceCAD, // store actual price charged (or computed) in CAD
       status: 'active',
       purchasedAt: startTime,
       ...(chargedCurrency ? { currency: chargedCurrency } : {})
@@ -198,7 +192,7 @@ router.post('/purchase', authenticateToken, async (req, res) => {
       message: 'Pass purchase requires payment through Stripe',
       passInfo: {
         type,
-        price: getPassPriceUSD(type),
+        price: getPassPriceCAD(type),
         duration: PASS_DURATIONS[type],
         stripeProduct: STRIPE_PRODUCTS[type]
       },
@@ -270,26 +264,26 @@ router.get('/admin/all', authenticateToken, async (req, res) => {
   }
 });
 
-// Stripe create-intent (server computes amount; ignores client "amount")
+// Stripe create-intent (server computes amount; ignores client "amount" & currency)
 router.post('/stripe/create-intent', authenticateToken, async (req, res) => {
   try {
-    const { passType, currency = 'usd' } = req.body;
+    const { passType } = req.body;
     if (!passType || !['day', 'week', 'month', 'year'].includes(passType)) {
       return res.status(400).json({ error: 'Invalid or missing passType' });
     }
 
-    const amountCents = Math.round(getPassPriceUSD(passType) * 100);
+    const amountCents = Math.round(getPassPriceCAD(passType) * 100);
 
     console.log(
       'Stripe key used:',
       (process.env.STRIPE_SECRET_KEY || '').substring(0, 10),
       '...'
     );
-    console.log('Computed amount (cents):', amountCents, 'passType:', passType);
+    console.log('Computed amount (cents):', amountCents, 'passType:', passType, CURRENCY);
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountCents,
-      currency,
+      currency: CURRENCY, // <- always CAD
       automatic_payment_methods: { enabled: true },
       metadata: {
         userId: req.user.userId || req.user.id || req.user._id,
